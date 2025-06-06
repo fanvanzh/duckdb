@@ -1382,6 +1382,7 @@ void ART::VerifyBuffers(IndexLock &l) {
 	}
 }
 
+/* test art index for lastest storage */
 constexpr const char *ART::TYPE_NAME;
 
 } // namespace duckdb
