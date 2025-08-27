@@ -25,6 +25,7 @@
 #include <duckdb/common/serializer/binary_deserializer.hpp>
 #include <duckdb/common/serializer/binary_serializer.hpp>
 #include <duckdb/common/serializer/memory_stream.hpp>
+#include <duckdb/storage/table/append_state.hpp>
 
 namespace duckdb {
 
@@ -1295,7 +1296,7 @@ IndexStorageInfo ART::GetStorageInfo(const case_insensitive_map_t<Value> &option
 	for (idx_t i = 0; i < allocator_count; i++) {
 		info.allocator_infos.push_back((*allocators)[i]->GetInfo());
 	}
-	RemoveCache();
+	ResetCache();
 	info_cache = info;
 	return info;
 }
@@ -1520,7 +1521,7 @@ void ART::UpdateCache(DataChunk &chunk, Vector &row_ids, bool insert) {
 }
 
 void ART::LoadCache() {
-	printf("Load cache\n");
+	// printf("Load cache\n");
 	std::string file_name = db.GetStorageManager().GetDBPath() + ".index_" + name;
 	auto &fs = duckdb::FileSystem::Get(db);
 	if (!fs.FileExists(file_name)) {
@@ -1548,11 +1549,14 @@ void ART::LoadCache() {
 			deserializer.Begin();
 			chunks.Deserialize(deserializer);
 			deserializer.End();
+
+			IndexLock l;
+			InitializeLock(l);
 			if (insert) {
-				BoundIndex::Append(chunks, rowids);
+				Insert(l, chunks, rowids);
 			}
 			else {
-				BoundIndex::Delete(chunks, rowids);
+				Delete(l, chunks, rowids);
 			}
 		}
 	}
@@ -1560,7 +1564,7 @@ void ART::LoadCache() {
 }
 
 void ART::SaveCache() {
-	printf("Save cache\n");
+	// printf("Save cache\n");
 	size_t batch_num = art_cache.count.size();
 	if (batch_num <= 0) {
 		return;
@@ -1588,8 +1592,8 @@ void ART::SaveCache() {
 	art_cache.Clear();
 }
 
-void ART::RemoveCache() {
-	printf("Remove cache\n");
+void ART::ResetCache() {
+	// printf("Reset cache\n");
 	std::string file_name = db.GetStorageManager().GetDBPath() + ".index_" + name;
 	auto &fs = duckdb::FileSystem::Get(db);
 	if (fs.FileExists(file_name)) {
@@ -1597,6 +1601,7 @@ void ART::RemoveCache() {
 	}
 	// clear
 	art_cache.Clear();
+	art_cache.enable = true;
 }
 
 constexpr const char *ART::TYPE_NAME;

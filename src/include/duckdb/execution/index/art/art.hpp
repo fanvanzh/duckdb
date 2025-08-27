@@ -141,7 +141,7 @@ public:
 	void UpdateCache(DataChunk &chunk, Vector &row_ids, bool insert);
 	void SaveCache();
 	void LoadCache();
-	void RemoveCache();
+	void ResetCache();
 
 private:
 	bool SearchEqual(ARTKey &key, idx_t max_count, unsafe_vector<row_t> &row_ids);
