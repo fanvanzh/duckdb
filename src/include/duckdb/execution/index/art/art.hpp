@@ -24,6 +24,21 @@ class FixedSizeAllocator;
 
 struct ARTIndexScanState;
 
+struct ARTCache {
+	bool enable = false;
+	vector<size_t> count; // count of batch
+	vector<bool> action; // 0: delete, 1: insert
+	vector<vector<char> > rowid_data;
+	vector<vector<char> > chunk_data;
+
+	void Clear() {
+		count.clear();
+		action.clear();
+		rowid_data.clear();
+		chunk_data.clear();
+	}
+};
+
 class ART : public BoundIndex {
 public:
 	friend class Leaf;
@@ -65,6 +80,10 @@ public:
 	bool verify_max_key_len;
 	//! The number of bytes fitting in the prefix.
 	uint8_t prefix_count;
+	//! Cache for modification
+	ARTCache art_cache;
+	int checkpoint_cnt = 0;
+	IndexStorageInfo info_cache;
 
 public:
 	//! Try to initialize a scan on the ART with the given expression and filter.
@@ -118,6 +137,11 @@ public:
 	string VerifyAndToString(IndexLock &state, const bool only_verify) override;
 	//! Verifies that the node allocations match the node counts.
 	void VerifyAllocations(IndexLock &state) override;
+
+	void UpdateCache(DataChunk &chunk, Vector &row_ids, bool insert);
+	void SaveCache();
+	void LoadCache();
+	void RemoveCache();
 
 private:
 	bool SearchEqual(ARTKey &key, idx_t max_count, unsafe_vector<row_t> &row_ids);

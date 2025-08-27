@@ -22,6 +22,10 @@
 #include "duckdb/storage/table/scan_state.hpp"
 #include "duckdb/storage/table_io_manager.hpp"
 
+#include <duckdb/common/serializer/binary_deserializer.hpp>
+#include <duckdb/common/serializer/binary_serializer.hpp>
+#include <duckdb/common/serializer/memory_stream.hpp>
+
 namespace duckdb {
 
 struct ARTIndexScanState : public IndexScanState {
@@ -106,12 +110,14 @@ ART::ART(const string &name, const IndexConstraintType index_constraint_type, co
 	if (info.root_block_ptr.IsValid()) {
 		// Backwards compatibility.
 		Deserialize(info.root_block_ptr);
+		LoadCache();
 		return;
 	}
 
 	// Set the root node and initialize the allocators.
 	tree.Set(info.root);
 	InitAllocators(info);
+	LoadCache();
 }
 
 //===--------------------------------------------------------------------===//
@@ -508,6 +514,7 @@ ErrorData ART::Insert(IndexLock &l, DataChunk &chunk, Vector &row_ids, IndexAppe
 	D_ASSERT(row_ids.GetType().InternalType() == ROW_TYPE);
 	auto row_count = chunk.size();
 
+	UpdateCache(chunk, row_ids, true);
 	ArenaAllocator allocator(BufferAllocator::Get(db));
 	unsafe_vector<ARTKey> keys(row_count);
 	unsafe_vector<ARTKey> row_id_keys(row_count);
@@ -758,6 +765,7 @@ void ART::Delete(IndexLock &state, DataChunk &input, Vector &row_ids) {
 	// FIXME: We could pass a row_count in here, as we sometimes don't have to delete all row IDs in the chunk,
 	// FIXME: but rather all row IDs up to the conflicting row.
 	auto row_count = input.size();
+	UpdateCache(input, row_ids, false);
 
 	DataChunk expr_chunk;
 	expr_chunk.Initialize(Allocator::DefaultAllocator(), logical_types);
@@ -1243,6 +1251,10 @@ void ART::TransformToDeprecated() {
 IndexStorageInfo ART::GetStorageInfo(const case_insensitive_map_t<Value> &options, const bool to_wal) {
 	// If the storage format uses deprecated leaf storage,
 	// then we need to transform all nested leaves before serialization.
+	if (!info_cache.name.empty()) {
+		SaveCache();
+		return info_cache;
+	}
 	// mutex with scan
 	lock_guard<mutex> l(lock);
 	auto v1_0_0_option = options.find("v1_0_0_storage");
@@ -1273,7 +1285,6 @@ IndexStorageInfo ART::GetStorageInfo(const case_insensitive_map_t<Value> &option
 	if (!to_wal) {
 		// Store the data on disk as partial blocks and set the block ids.
 		WritePartialBlocks(v1_0_0_storage);
-
 	} else {
 		// Set the correct allocation sizes and get the map containing all buffers.
 		for (idx_t i = 0; i < allocator_count; i++) {
@@ -1284,6 +1295,8 @@ IndexStorageInfo ART::GetStorageInfo(const case_insensitive_map_t<Value> &option
 	for (idx_t i = 0; i < allocator_count; i++) {
 		info.allocator_infos.push_back((*allocators)[i]->GetInfo());
 	}
+	RemoveCache();
+	info_cache = info;
 	return info;
 }
 
@@ -1380,6 +1393,7 @@ void ART::Vacuum(IndexLock &state) {
 		for (auto &allocator : *allocators) {
 			allocator->Reset();
 		}
+		info_cache.name.clear();
 		return;
 	}
 
@@ -1397,6 +1411,8 @@ void ART::Vacuum(IndexLock &state) {
 
 	// Finalize the vacuum operation.
 	FinalizeVacuum(indexes);
+
+	info_cache.name.clear();
 }
 
 //===--------------------------------------------------------------------===//
@@ -1473,6 +1489,114 @@ void ART::VerifyAllocationsInternal() {
 		D_ASSERT(segment_count == node_counts[NumericCast<uint8_t>(i)]);
 	}
 #endif
+}
+
+//===--------------------------------------------------------------------===//
+// Modification cache
+//===--------------------------------------------------------------------===//
+void ART::UpdateCache(DataChunk &chunk, Vector &row_ids, bool insert) {
+	if (!art_cache.enable) {
+		return;
+	}
+
+	art_cache.action.push_back(insert);
+	art_cache.count.push_back(chunk.size());
+
+	// chunk data
+	MemoryStream stream;
+	BinarySerializer serializer(stream);
+	serializer.Begin();
+	chunk.Serialize(serializer);
+	serializer.End();
+	vector<char> buffer_chunk(stream.GetData(), stream.GetData() + stream.GetPosition());
+	art_cache.chunk_data.emplace_back(buffer_chunk);
+	// rowid data
+	stream.Rewind();
+	serializer.Begin();
+	row_ids.Serialize(serializer, chunk.size());
+	serializer.End();
+	vector<char> buffer_rowid(stream.GetData(), stream.GetData() + stream.GetPosition());
+	art_cache.rowid_data.emplace_back(buffer_rowid);
+}
+
+void ART::LoadCache() {
+	printf("Load cache\n");
+	std::string file_name = db.GetStorageManager().GetDBPath() + ".index_" + name;
+	auto &fs = duckdb::FileSystem::Get(db);
+	if (!fs.FileExists(file_name)) {
+		return;
+	}
+
+	auto handle = fs.OpenFile(file_name, FileFlags::FILE_FLAGS_READ);
+	idx_t fsize = handle->GetFileSize();
+	std::vector<char> buffer(fsize);
+	fs.Read(*handle, buffer.data(), (int64_t)fsize);
+	//! do not cache in load mode
+	art_cache.enable = false;
+	MemoryStream stream((data_ptr_t)buffer.data(), buffer.size());
+	while (stream.GetPosition() != stream.GetCapacity()) {
+		size_t batch = stream.Read<size_t>();
+		BinaryDeserializer deserializer(stream);
+		for (size_t i = 0; i < batch; i++) {
+			bool insert = stream.Read<bool>();
+			size_t count = stream.Read<size_t>();
+			Vector rowids(LogicalType::ROW_TYPE);
+			DataChunk chunks;
+			deserializer.Begin();
+			rowids.Deserialize(deserializer, count);
+			deserializer.End();
+			deserializer.Begin();
+			chunks.Deserialize(deserializer);
+			deserializer.End();
+			if (insert) {
+				BoundIndex::Append(chunks, rowids);
+			}
+			else {
+				BoundIndex::Delete(chunks, rowids);
+			}
+		}
+	}
+	art_cache.enable = true;
+}
+
+void ART::SaveCache() {
+	printf("Save cache\n");
+	size_t batch_num = art_cache.count.size();
+	if (batch_num <= 0) {
+		return;
+	}
+	// open file
+	std::string file_name = db.GetStorageManager().GetDBPath() + ".index_" + name;
+	auto &fs = duckdb::FileSystem::Get(db);
+	auto handle = fs.OpenFile(file_name, FileFlags::FILE_FLAGS_FILE_CREATE |
+										FileFlags::FILE_FLAGS_WRITE | FileFlags::FILE_FLAGS_APPEND);
+	// write append
+	MemoryStream stream;
+	stream.Write(batch_num);
+	// array of action, count
+	for (size_t i = 0; i < batch_num; i++) {
+		stream.Write<bool>(art_cache.action[i]);
+		stream.Write<size_t>(art_cache.count[i]);
+		auto &rowid_vec = art_cache.rowid_data[i];
+		auto &chunk_vec = art_cache.chunk_data[i];
+		stream.WriteData((const_data_ptr_t)rowid_vec.data(), rowid_vec.size());
+		stream.WriteData((const_data_ptr_t)chunk_vec.data(), chunk_vec.size());
+	}
+	fs.Write(*handle, stream.GetData(), (int64_t )stream.GetPosition());
+	fs.FileSync(*handle);
+	// clear
+	art_cache.Clear();
+}
+
+void ART::RemoveCache() {
+	printf("Remove cache\n");
+	std::string file_name = db.GetStorageManager().GetDBPath() + ".index_" + name;
+	auto &fs = duckdb::FileSystem::Get(db);
+	if (fs.FileExists(file_name)) {
+		fs.RemoveFile(file_name);
+	}
+	// clear
+	art_cache.Clear();
 }
 
 constexpr const char *ART::TYPE_NAME;
