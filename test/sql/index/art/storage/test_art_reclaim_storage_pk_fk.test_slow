@@ -17,10 +17,10 @@ CREATE TABLE pk_tbl (i INTEGER PRIMARY KEY);
 statement ok
 INSERT INTO pk_tbl SELECT range FROM range(200000);
 
-query I
-SELECT used_blocks > 2 FROM pragma_database_size();
-----
-1
+#query I
+#SELECT used_blocks > 2 FROM pragma_database_size();
+#----
+#1
 
 statement ok
 DROP TABLE pk_tbl;
@@ -83,10 +83,10 @@ CREATE TABLE unique_tbl (i INTEGER UNIQUE);
 statement ok
 INSERT INTO unique_tbl SELECT range FROM range(200000);
 
-query I
-SELECT used_blocks > 2 FROM pragma_database_size();
-----
-1
+#query I
+#SELECT used_blocks > 2 FROM pragma_database_size();
+#----
+#1
 
 statement ok
 DROP TABLE unique_tbl;

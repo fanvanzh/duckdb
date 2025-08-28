@@ -26,6 +26,7 @@
 #include <duckdb/common/serializer/binary_serializer.hpp>
 #include <duckdb/common/serializer/memory_stream.hpp>
 #include <duckdb/storage/table/append_state.hpp>
+#include <duckdb/main/database.hpp>
 
 namespace duckdb {
 
@@ -1594,6 +1595,10 @@ void ART::SaveCache() {
 
 void ART::ResetCache() {
 	// printf("Reset cache\n");
+	DBConfig &config = DBConfig::Get(db);
+	if (!config.options.enable_external_access) {
+		return;
+	}
 	std::string file_name = db.GetStorageManager().GetDBPath() + ".index_" + name;
 	auto &fs = duckdb::FileSystem::Get(db);
 	if (fs.FileExists(file_name)) {

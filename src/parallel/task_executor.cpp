@@ -2,6 +2,8 @@
 #include "duckdb/parallel/task_notifier.hpp"
 #include "duckdb/parallel/task_scheduler.hpp"
 
+#include <unistd.h>
+
 namespace duckdb {
 
 TaskExecutor::TaskExecutor(TaskScheduler &scheduler)

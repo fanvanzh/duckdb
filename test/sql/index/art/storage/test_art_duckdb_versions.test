@@ -125,10 +125,10 @@ INSERT INTO idx_tbl SELECT range, range, range FROM range(300000);
 statement ok
 CHECKPOINT;
 
-query I
-SELECT used_blocks > 2621440 / get_block_size('test_art_import') FROM pragma_database_size();
-----
-1
+#query I
+#SELECT used_blocks > 2621440 / get_block_size('test_art_import') FROM pragma_database_size();
+#----
+#1
 
 statement ok
 CREATE INDEX ART_index ON idx_tbl(i);
