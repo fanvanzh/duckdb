@@ -1297,8 +1297,10 @@ IndexStorageInfo ART::GetStorageInfo(const case_insensitive_map_t<Value> &option
 	for (idx_t i = 0; i < allocator_count; i++) {
 		info.allocator_infos.push_back((*allocators)[i]->GetInfo());
 	}
-	ResetCache();
-	info_cache = info;
+	if (!to_wal) {
+		ResetCache();
+		info_cache = info;
+	}
 	return info;
 }
 
@@ -1500,6 +1502,7 @@ void ART::UpdateCache(DataChunk &chunk, Vector &row_ids, bool insert) {
 	if (!art_cache.enable) {
 		return;
 	}
+	// printf("update %lld tuple to cache: %d\n", chunk.size(), (int)insert);
 
 	art_cache.action.push_back(insert);
 	art_cache.count.push_back(chunk.size());
