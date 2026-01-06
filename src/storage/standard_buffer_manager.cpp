@@ -538,6 +538,11 @@ void StandardBufferManager::WriteTemporaryBuffer(MemoryTag tag, block_id_t block
 	}
 
 	buffer.Write(QueryContext(), *handle, offset);
+	//! remember the temp block_id, avoid frequent access syscall
+	{
+		lock_guard<mutex> guard(temporary_directory.lock);
+		temp_written_blocks.insert(block_id);
+	}
 }
 
 unique_ptr<FileBuffer> StandardBufferManager::ReadTemporaryBuffer(QueryContext context, MemoryTag tag,
@@ -610,6 +615,13 @@ void StandardBufferManager::DeleteTemporaryFile(BlockHandle &block) {
 		return;
 	}
 
+	// reduce frequent access system-call
+	{
+		lock_guard<mutex> guard(temporary_directory.lock);
+		if (temp_written_blocks.find(id) == temp_written_blocks.end()) {
+			return;
+		}
+	}
 	// The file is not in the shared pool of files.
 	auto &fs = FileSystem::GetFileSystem(db);
 	auto path = GetTemporaryPath(id);
@@ -620,6 +632,10 @@ void StandardBufferManager::DeleteTemporaryFile(BlockHandle &block) {
 		handle.reset();
 		fs.RemoveFile(path);
 		temporary_directory.handle->GetTempFile().DecreaseSizeOnDisk(content_size);
+	}
+	{
+		lock_guard<mutex> guard(temporary_directory.lock);
+		temp_written_blocks.erase(id);
 	}
 }
 

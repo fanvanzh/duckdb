@@ -195,6 +195,8 @@ protected:
 	unique_ptr<BlockManager> temp_block_manager;
 	//! Temporary evicted memory data per tag
 	atomic<idx_t> evicted_data_per_tag[MEMORY_TAG_COUNT];
+	//! The temporary blocks that have already been written.
+	set<block_id_t> temp_written_blocks;
 };
 
 } // namespace duckdb
